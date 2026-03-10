@@ -1,0 +1,801 @@
+================================================================================
+   StockAI - AI-Powered Convenience Store Stock Prediction & Management System
+                         COMPLETE PROJECT EXPLANATION
+================================================================================
+
+Project Name  : StockAI
+Target Market : Sri Lanka Convenience Stores
+Tech Stack    : React (Frontend) + Node.js/Express (Backend) + Python/FastAPI (ML)
+Database      : MongoDB Atlas (Cloud)
+ML Algorithms : XGBoost / Random Forest (scikit-learn)
+
+================================================================================
+                           1. PROJECT OVERVIEW
+================================================================================
+
+StockAI is an AI-powered stock prediction and inventory management system 
+designed for convenience stores in Sri Lanka. It combines a modern web 
+application with machine learning to help store owners:
+
+  - Track inventory and products in real-time
+  - Record sales and returns
+  - Predict future demand using AI/ML models
+  - Detect inventory risks (out of stock, low stock, overstock)
+  - Generate smart reorder plans with cost estimates
+  - Receive AI-generated alerts and recommendations
+  - Export reorder plans as CSV files
+
+The system has two user roles:
+  - Admin  : Full access (manage users, products, settings, train models)
+  - Store  : Operational access (record sales, view inventory, forecasts)
+
+Default credentials:
+  - Admin : admin / admin123
+  - Store : store1 / store123
+
+================================================================================
+                         2. SYSTEM ARCHITECTURE
+================================================================================
+
+The project has THREE main services running on separate ports:
+
+  1. Frontend (React)        -> http://localhost:3000
+  2. Backend  (Node/Express) -> http://localhost:5000
+  3. ML Service (Python)     -> http://localhost:8000
+
+Data Flow:
+  Browser -> React Frontend -> Node.js Backend API -> MongoDB (data storage)
+                                   |
+                                   +-> Python ML Service (predictions)
+                                           |
+                                           +-> Trained ML Model (.pkl file)
+
+Authentication Flow:
+  User logs in -> Backend validates credentials -> Returns JWT token
+  -> Token stored in browser localStorage -> Sent with every API request
+
+================================================================================
+                      3. FOLDER STRUCTURE & FILE DESCRIPTIONS
+================================================================================
+
+Root Directory:
+  |
+  |-- app.py                    : Streamlit app (standalone ML demo, not main app)
+  |-- model_train.ipynb         : Jupyter notebook for ML model training/experimentation
+  |-- requirements.txt          : Python dependencies for the Streamlit app
+  |-- AI_Reorder_Plan.csv       : Sample AI-generated reorder plan export
+  |-- TEST_CASES.md             : Manual test case documentation
+  |-- run-tests.ps1             : PowerShell script to run test cases
+  |-- test-results-raw.txt      : Raw test execution results
+  |
+  |-- data/
+  |   |-- Grocery_Inventory_and_Sales_Dataset.csv
+  |       -> CSV dataset with ~1000 grocery product records
+  |       -> Used as fallback training data when MongoDB has insufficient sales
+  |       -> Columns: SKU, Category, Stock_Quantity, Unit_Price, Sales_Volume, etc.
+  |
+  |-- docs/
+  |   |-- ARCHITECTURE.md       : Detailed system architecture documentation
+  |   |-- API.md                : API endpoint documentation
+  |   |-- AI_ARCHITECTURE.md    : AI/ML architecture details
+  |
+  |-- backend/                  : Node.js Express API Server
+  |-- frontend/                 : React Single Page Application
+  |-- ml/                       : Python FastAPI ML Service
+
+================================================================================
+                      4. BACKEND (Node.js + Express)
+                         backend/ directory
+================================================================================
+
+Port: 5000
+Framework: Express.js
+Database: MongoDB via Mongoose ODM
+
+4.1 CONFIGURATION FILES
+------------------------
+backend/package.json
+  - Project name: stockai-server
+  - Dependencies: express, mongoose, bcryptjs, jsonwebtoken, cors, axios, 
+    express-validator, json2csv, dotenv
+  - Scripts: npm start (production), npm run dev (development with nodemon),
+    npm run seed (seed database)
+
+backend/.env
+  - PORT=5000
+  - MONGODB_URI (MongoDB Atlas connection string)
+  - JWT_SECRET (for signing authentication tokens)
+  - JWT_EXPIRE=7d (token expiry)
+  - ML_SERVICE_URL=http://localhost:8000 (Python ML service)
+  - CORS_ORIGIN (allowed frontend origins)
+
+4.2 ENTRY POINT
+-----------------
+backend/src/index.js
+  - Main server file that initializes Express
+  - Connects to MongoDB via Mongoose
+  - Configures CORS (only allows specified origins)
+  - Registers all API routes under /api/* prefix
+  - Includes health check endpoint: GET /api/health
+  - Development request logging middleware
+  - 404 handler and global error handler
+  - Listens on port 5000
+
+4.3 DATABASE CONFIGURATION
+----------------------------
+backend/src/config/db.js
+  - Connects to MongoDB using Mongoose
+  - Uses MONGODB_URI from environment variables
+  - Forces IPv4 connections (family: 4)
+  - Exits process on connection failure
+
+4.4 MIDDLEWARE
+---------------
+backend/src/middleware/auth.js
+  - protect(): Verifies JWT Bearer token from Authorization header
+    -> Extracts token, verifies with JWT_SECRET
+    -> Finds user in database, attaches to req.user
+    -> Returns 401 if token missing/invalid
+  - authorize(...roles): Role-based access control
+    -> Checks if req.user.role matches allowed roles
+    -> Returns 403 if unauthorized
+
+4.5 MODELS (Mongoose Schemas)
+-------------------------------
+backend/src/models/index.js
+  - Exports all models: User, Product, Sale, ReorderPlan, ReorderPlanItem, Settings
+
+backend/src/models/User.js
+  - Fields: username (unique), password (hashed), role (admin/store), lastLogin
+  - Pre-save hook: Hashes password with bcrypt (salt=10)
+  - Methods: matchPassword() - compares passwords with bcrypt
+  - Methods: getSignedJwtToken() - generates JWT with user id and role
+
+backend/src/models/Product.js
+  - Fields: sku (unique), name, category, price, currentStock, reorderPoint,
+    reorderQuantity, leadTimeDays, safetyStock, warehouseLocation, 
+    status (Active/Discontinued/Backordered)
+  - Virtual: isLowStock -> true when currentStock <= reorderPoint
+  - Timestamps enabled (createdAt, updatedAt)
+
+backend/src/models/Sale.js
+  - Fields: product (ref->Product), quantity, unitPrice, totalAmount, 
+    saleType (sale/return), saleDate, recordedBy (ref->User), notes
+  - Pre-save hook: Calculates totalAmount = quantity * unitPrice
+
+backend/src/models/ReorderPlan.js
+  - Fields: generatedBy (ref->User), status (pending/approved/exported/completed),
+    notes, generatedAt
+  - Represents a generated reorder plan
+
+backend/src/models/ReorderPlanItem.js
+  - Fields: plan (ref->ReorderPlan), product (ref->Product), sku, productName,
+    currentStock, predictedDemand, safetyStock, leadTimeDays, suggestedQty, reason
+  - Each item in a reorder plan with ML-predicted quantities
+
+backend/src/models/Settings.js
+  - Fields: defaultLeadTimeDays, defaultSafetyStock, forecastWeeks,
+    holidays (array of date strings), promotions (array of objects)
+  - Singleton pattern: getSettings() creates defaults if none exist
+  - Default holidays are Sri Lankan public holidays for 2026
+
+4.6 ROUTES (API Endpoints)
+-----------------------------
+
+--- Authentication Routes (backend/src/routes/auth.routes.js) ---
+  POST /api/auth/register  : Register new user (admin only, protected)
+  POST /api/auth/login     : Login with username/password, returns JWT token
+  GET  /api/auth/me        : Get current authenticated user info
+  POST /api/auth/logout    : Logout (server-side acknowledgment)
+
+--- Product Routes (backend/src/routes/products.routes.js) ---
+  GET    /api/products              : List all products (with filter/search/pagination)
+  GET    /api/products/categories   : Get unique product categories
+  GET    /api/products/low-stock    : Get products where stock <= reorder point
+  GET    /api/products/:id          : Get single product by ID
+  GET    /api/products/sku/:sku     : Get product by SKU code
+  POST   /api/products              : Create new product (admin only)
+  PUT    /api/products/:id          : Update product (admin only)
+  DELETE /api/products/:id          : Delete product (admin only)
+
+--- Sales Routes (backend/src/routes/sales.routes.js) ---
+  GET  /api/sales              : List sales with filtering (date range, product, type)
+  GET  /api/sales/summary      : Get sales summary (total sales, returns, net)
+  POST /api/sales              : Record a sale or return
+       -> Validates stock availability for sales
+       -> Automatically updates product currentStock
+  GET  /api/sales/:id          : Get single sale record
+  GET  /api/sales/stats/monthly : Get monthly sales statistics (grouped by month)
+
+--- Forecast Routes (backend/src/routes/forecast.routes.js) ---
+  POST /api/forecast/predict   : Get AI demand prediction for a product
+       -> Fetches product from DB
+       -> Calls Python ML service for prediction
+       -> Calculates suggested reorder quantity
+       -> Returns weekly forecast breakdown
+  POST /api/forecast/batch     : Batch predictions for multiple SKUs
+  GET  /api/forecast/ml-status : Check ML service health/status
+  GET  /api/forecast/health    : ML service health (alias)
+
+--- Reorder Plan Routes (backend/src/routes/reorder.routes.js) ---
+  GET    /api/reorder              : List all reorder plans
+  POST   /api/reorder/generate     : Generate new AI-powered reorder plan
+         -> Finds products needing reorder (low stock or all)
+         -> Gets ML predictions for each product
+         -> Calculates: suggestedQty = predictedDemand + safetyStock - currentStock
+         -> Saves plan and items to MongoDB
+  GET    /api/reorder/:id          : Get single plan with items
+  GET    /api/reorder/:id/export   : Export plan as CSV file download
+  PATCH  /api/reorder/:id/status   : Update plan status (admin only)
+  DELETE /api/reorder/:id          : Delete plan and items (admin only)
+
+--- AI Routes (backend/src/routes/ai.routes.js) ---
+  POST /api/ai/train-model       : Train/retrain the ML model
+  POST /api/ai/predict-demand    : Predict demand for a SKU with explanation
+  GET  /api/ai/inventory-insights: Get AI risk analysis for all active products
+  GET  /api/ai/reorder-plan      : Get AI-generated smart reorder plan
+  GET  /api/ai/alerts            : Get AI-generated alerts (critical/high/medium)
+  GET  /api/ai/model-metrics     : Get current model performance metrics
+
+--- Settings Routes (backend/src/routes/settings.routes.js) ---
+  GET    /api/settings              : Get system settings
+  PUT    /api/settings              : Update settings (admin only)
+  POST   /api/settings/holidays     : Add a holiday date
+  DELETE /api/settings/holidays/:d  : Remove a holiday date
+
+--- Admin Routes (backend/src/routes/admin.routes.js) ---
+  GET    /api/admin/users      : List all users (admin only)
+  POST   /api/admin/users      : Create new user (admin only)
+  DELETE /api/admin/users/:id  : Delete user (admin only, prevents last admin deletion)
+  GET    /api/admin/stats      : Get system statistics (products, sales, revenue)
+
+4.7 SERVICES
+--------------
+backend/src/services/mlService.js
+  - HTTP client for the Python ML service (http://localhost:8000)
+  - Functions:
+    -> checkHealth()     : GET /health
+    -> predict(product)  : POST /predict - maps product fields to ML features
+    -> batchPredict()    : POST /batch-predict
+    -> trainModel()      : POST /train
+    -> getStatus()       : GET /health
+    -> postInsights()    : POST /inventory-insights
+    -> postReorderPlan() : POST /reorder-plan
+    -> postAlerts()      : POST /alerts
+  - Includes fallback prediction logic when ML service is offline
+    -> Estimates demand based on reorder quantity / lead time
+
+4.8 SEED SCRIPT
+-----------------
+backend/src/seed.js
+  - Run with: npm run seed
+  - Creates default admin user (admin / admin123)
+  - Creates default store user (store1 / store123)
+  - Seeds ~25+ sample Sri Lankan grocery products across categories:
+    Grains & Pulses, Beverages, Dairy, Snacks & Confectionery,
+    Household, Personal Care, Condiments & Spices, Canned Goods, Frozen
+  - Creates default system settings with Sri Lankan holidays
+
+================================================================================
+                      5. FRONTEND (React)
+                         frontend/ directory
+================================================================================
+
+Port: 3000
+Framework: React 18 with React Router v6
+Charts: Recharts library
+HTTP Client: Axios
+
+5.1 CONFIGURATION
+-------------------
+frontend/package.json
+  - Project name: stockai-client
+  - Dependencies: react, react-dom, react-router-dom, axios, recharts, react-scripts
+  - Scripts: npm start (dev server), npm run build (production build)
+
+frontend/.env
+  - REACT_APP_API_URL=http://localhost:5000/api
+
+5.2 ENTRY POINT & ROUTING
+----------------------------
+frontend/src/index.js
+  - Renders <App /> component
+
+frontend/src/App.jsx
+  - Wraps app in AuthProvider (authentication context)
+  - Defines all routes using React Router:
+    /login     -> Login page (public)
+    /          -> Dashboard (protected)
+    /sales     -> Sales Entry (protected)
+    /inventory -> Inventory Management (protected)
+    /forecast  -> AI Forecast (protected)
+    /reorder   -> Reorder Plan (protected)
+    /ai-insights -> AI Insights (protected)
+    /admin     -> Admin Panel (protected, admin only)
+  - Shows Navbar on all pages when logged in
+  - Redirects unauthenticated users to /login
+
+5.3 CONTEXT
+-------------
+frontend/src/context/AuthContext.jsx
+  - Provides authentication state across the app
+  - On mount: Checks for stored JWT token, validates with /api/auth/me
+  - Functions:
+    -> login(username, password) : Authenticates, stores token in localStorage
+    -> logout() : Removes token, clears user state
+  - Exposes: user, loading, login, logout, isAdmin
+
+5.4 SERVICES
+--------------
+frontend/src/services/api.js
+  - Creates Axios instance with base URL http://localhost:5000/api
+  - Request interceptor: Automatically adds JWT Bearer token from localStorage
+  - Response interceptor: Redirects to /login on 401 errors
+  - Exports API helper objects:
+    -> authApi      : login, me, register
+    -> productsApi  : getAll, getOne, getBySku, create, update, delete, 
+                      updateStock, getLowStock, getCategories
+    -> salesApi     : getAll, create, getSummary, getByProduct, 
+                      getMonthlyStats, getTopProducts
+    -> forecastApi  : predict, batchPredict, predictAllLowStock, 
+                      getHealth, getModelInfo, getMLStatus
+    -> reorderApi   : getPlans, getPlan, generate, export, updateStatus, delete
+    -> settingsApi  : get, update, addHoliday, removeHoliday, addPromo, removePromo
+    -> adminApi     : getDashboard, getUsers, createUser, deleteUser, testPrediction
+
+5.5 PAGES
+-----------
+frontend/src/pages/Login.jsx
+  - Login form with username/password fields
+  - Shows demo credentials (admin/admin123, store1/store123)
+  - Calls AuthContext login function
+  - Redirects to Dashboard on success
+
+frontend/src/pages/Dashboard.jsx
+  - Main overview page after login
+  - Shows 4 stat cards: Total Products, Low Stock Items, Total Sales, Net Revenue
+  - Monthly Sales Movement bar chart (last 6 months)
+  - Top Selling Products list
+  - Low Stock Alerts section
+  - ML Service status indicator
+
+frontend/src/pages/SalesEntry.jsx
+  - Form to record sales and returns
+  - Product search with dropdown selection
+  - Quantity, sale type (sale/return), date fields
+  - Validates stock availability before recording sales
+  - Shows recent sales history table
+  - Filters by date range and product
+
+frontend/src/pages/Inventory.jsx
+  - Full product inventory management
+  - Filters: category, status, low stock, text search
+  - Product cards showing: name, SKU, price, stock level, status
+  - Quick stock update (add/remove) buttons
+  - Add/Edit product modal (admin only)
+  - Delete product (admin only)
+
+frontend/src/pages/Forecast.jsx
+  - Select a product and number of forecast weeks
+  - Click "Get Forecast" to call ML prediction
+  - Shows: predicted demand, suggested reorder, confidence score
+  - ForecastLineChart: Visual weekly demand prediction
+  - StockComparisonChart: Bar chart comparing current stock vs predicted demand
+
+frontend/src/pages/ReorderPlan.jsx
+  - Generate AI-powered reorder plans
+  - Options: Include all low stock, include all products, custom safety stock
+  - ReorderTable showing: SKU, product, current stock, predicted demand, 
+    safety stock, lead time, suggested order, urgency, reason
+  - View history of past reorder plans
+  - Export plans as CSV
+
+frontend/src/pages/AIInsights.jsx
+  - Tabbed interface with 4 tabs:
+    1. Inventory Insights: AI risk analysis for all products
+       -> Color-coded risk levels (Critical, High, Medium, Low, Overstock)
+       -> Predicted demand, suggested orders, confidence scores
+    2. Smart Reorder Plan: AI-generated reorder plan with cost estimates
+    3. AI Alerts: Natural-language alerts for at-risk products
+    4. Model Performance: Training metrics (R2 score, RMSE, algorithm)
+       -> Train/retrain model with XGBoost or Random Forest
+  - All data comes from the Python ML service via backend API
+
+frontend/src/pages/Admin.jsx
+  - Admin-only panel with tabs:
+    1. User Management: Create, delete users; assign roles
+    2. Settings: Lead time, safety stock, forecast weeks, holidays, promotions
+    3. ML Service: Model training, algorithm selection, test predictions
+    4. Data Import: CSV upload for products/sales
+    5. Stock Adjustment: Manual stock level corrections
+
+5.6 COMPONENTS
+-----------------
+frontend/src/components/Navbar.jsx
+  - Navigation bar with links: Dashboard, Sales Entry, Inventory, Forecast,
+    Reorder Plan, AI Insights, Admin (admin only)
+  - Shows current user info and logout button
+
+frontend/src/components/ProtectedRoute.jsx
+  - Route wrapper that redirects to /login if not authenticated
+  - Optional adminOnly prop that checks user role
+
+frontend/src/components/ProductCard.jsx
+  - Displays product info: name, SKU, category, price, stock level
+  - Shows badges: category, status, "Low Stock" warning
+  - Quick stock update feature (add/remove units)
+  - Edit and Delete buttons (admin only)
+
+frontend/src/components/ForecastChart.jsx
+  - ForecastLineChart: Recharts line chart for weekly demand forecast
+  - StockComparisonChart: Recharts bar chart for stock comparison
+  - SalesTrendChart: Recharts bar chart for sales trends
+
+frontend/src/components/ReorderTable.jsx
+  - Table component for displaying reorder plan items
+  - Columns: SKU, Product, Current Stock, Predicted Demand, Safety Stock,
+    Lead Time, Suggested Order, Urgency (badge), Reason
+  - Color-coded urgency: Critical (red), High (yellow), Medium (blue)
+
+frontend/src/index.css
+  - Complete CSS stylesheet for the entire application
+  - Custom design (no CSS framework like Bootstrap)
+  - Responsive layout, card-based UI, badges, forms, tables
+
+================================================================================
+                      6. ML SERVICE (Python FastAPI)
+                         ml/ directory
+================================================================================
+
+Port: 8000
+Framework: FastAPI
+ML Libraries: scikit-learn, XGBoost, pandas, numpy
+Model Storage: joblib (.pkl files)
+
+6.1 CONFIGURATION
+-------------------
+ml/requirements.txt
+  - fastapi, uvicorn, python-dotenv, pandas, numpy, scikit-learn,
+    joblib, pydantic, xgboost, pymongo
+
+ml/.env
+  - ML_SERVICE_PORT=8000
+  - MODEL_DIR=./models
+  - MONGODB_URI (same MongoDB Atlas as backend)
+  - MONGODB_DB=StockDB
+  - ALLOWED_ORIGINS (CORS)
+
+6.2 MAIN APPLICATION
+-----------------------
+ml/app.py
+  - FastAPI application with CORS middleware
+  - On startup: Loads trained model from ./models/demand_model.pkl
+  - Falls back to legacy model format if available
+
+6.3 ML MODELS & TRAINING
+---------------------------
+Training Endpoint: POST /train
+  - Accepts: algorithm (xgboost or random_forest), test_size
+  - Data Sources (in priority order):
+    1. MongoDB: Joins products + sales collections to build training data
+    2. CSV Fallback: Uses data/Grocery_Inventory_and_Sales_Dataset.csv
+  - Feature Engineering:
+    -> Category (label encoded)
+    -> Stock_Quantity, Reorder_Level, Reorder_Quantity, Unit_Price
+    -> Warehouse_Location (label encoded)
+    -> Inventory_Turnover_Rate
+    -> Status (label encoded)
+    -> Received_Month, Received_Day
+    -> Order_Lead_Time, Days_To_Expiry
+  - Target Variable: Sales_Volume
+  - Algorithms:
+    -> XGBoost: n_estimators=200, max_depth=6, learning_rate=0.1
+    -> Random Forest: n_estimators=200, max_depth=12
+  - Evaluation Metrics: R2 Score, RMSE
+  - Saves model + encoders + metrics to ./models/demand_model.pkl
+
+6.4 PREDICTION ENDPOINTS
+---------------------------
+POST /predict
+  - Input: Single product features (sku, category, stock, price, etc.)
+  - Output: predicted_demand, confidence, model_version
+  - Uses trained model to predict Sales_Volume for given features
+
+POST /batch-predict
+  - Input: Array of product feature sets
+  - Output: Array of predictions
+
+6.5 AI ANALYSIS ENDPOINTS
+----------------------------
+POST /inventory-insights
+  - Analyzes ALL products for inventory risk
+  - For each product:
+    -> Predicts weekly demand using ML model
+    -> Calculates risk level based on:
+       * Current stock vs predicted demand
+       * Days of stock remaining vs lead time
+       * Stock vs safety stock levels
+    -> Risk Levels: Critical, High, Medium, Low, Overstock
+    -> Generates natural-language alert message
+    -> Generates explanation for suggested order quantity
+  - Returns insights sorted by risk severity (Critical first)
+
+POST /reorder-plan
+  - Generates complete reorder plan with cost estimates
+  - For each product:
+    -> Predicts demand for lead-time period
+    -> Calculates: suggested_order = predicted_demand + safety_stock - current_stock
+    -> Estimates cost = suggested_order * price
+  - Only includes products that need ordering (suggested_order > 0)
+  - Returns sorted by risk level with total estimated cost
+
+POST /alerts
+  - Generates natural-language AI alerts
+  - Only includes products with risk levels: Critical, High, Medium, Overstock
+  - Alert messages explain the risk in plain English:
+    -> "OUT OF STOCK. Immediate reorder required."
+    -> "High demand detected. Stock may run out in X days."
+    -> "Overstocked by ~X%. Consider running promotions."
+    -> "Stock is approaching safety level. Monitor closely."
+
+6.6 HEALTH & MODEL INFO
+--------------------------
+GET /health
+  - Returns: status, model_loaded, version, timestamp
+
+GET /model-info
+  - Returns: algorithm, features list, training metrics
+
+6.7 HELPER FUNCTIONS
+-----------------------
+safe_encode()         : Safely label-encodes categorical values
+prepare_features_single() : Prepares feature DataFrame for a single prediction
+compute_risk_level()  : Determines inventory risk (Critical/High/Medium/Low/Overstock)
+generate_alert()      : Creates human-readable alert messages
+generate_explanation() : Creates order quantity explanations
+
+================================================================================
+                      7. DATABASE (MongoDB Atlas)
+================================================================================
+
+Database Name: StockDB
+Cloud Provider: MongoDB Atlas
+
+Collections:
+  1. users         : User accounts (admin, store roles)
+  2. products      : Product inventory catalog
+  3. sales         : Sales and return transaction records
+  4. reorderplans  : Generated reorder plans
+  5. reorderplanitems : Individual items within reorder plans
+  6. settings      : System configuration (singleton)
+
+================================================================================
+                      8. DATA FILES
+================================================================================
+
+data/Grocery_Inventory_and_Sales_Dataset.csv
+  - Training dataset with ~1000 grocery product records
+  - Columns include: SKU, Category, Stock_Quantity, Unit_Price, Sales_Volume,
+    Reorder_Level, Reorder_Quantity, Warehouse_Location, Status,
+    Date_Received, Last_Order_Date, Expiration_Date, Inventory_Turnover_Rate
+  - Used as fallback training data when MongoDB has < 10 sales records
+
+AI_Reorder_Plan.csv
+  - Sample exported reorder plan CSV file
+
+================================================================================
+                      9. HOW TO RUN THE PROJECT
+================================================================================
+
+Prerequisites:
+  - Node.js (v18+)
+  - Python (3.9+)
+  - MongoDB Atlas account (or local MongoDB)
+
+Step 1: Start ML Service (Python)
+  cd ml
+  pip install -r requirements.txt
+  python -m uvicorn app:app --host 0.0.0.0 --port 8000
+
+Step 2: Start Backend (Node.js)
+  cd backend
+  npm install
+  npm run seed   (first time only - seeds database with sample data)
+  npm start      (or npm run dev for development with auto-reload)
+
+Step 3: Start Frontend (React)
+  cd frontend
+  npm install
+  npm start
+
+Step 4: Open Browser
+  Navigate to http://localhost:3000
+  Login with: admin / admin123
+
+Step 5: Train ML Model (first time)
+  Go to Admin panel -> ML Service tab -> Click "Train Model"
+  OR go to AI Insights page -> Model tab -> Click "Train Model"
+
+================================================================================
+                     10. KEY FEATURES SUMMARY
+================================================================================
+
+1. Authentication & Authorization
+   - JWT-based login system
+   - Role-based access control (admin vs store)
+   - Protected routes on both frontend and backend
+
+2. Inventory Management
+   - CRUD operations for products
+   - Category-based organization
+   - Low stock detection and alerts
+   - Quick stock adjustments
+
+3. Sales Recording
+   - Record sales and returns
+   - Automatic stock level updates
+   - Sales history with filtering
+   - Monthly sales statistics
+
+4. AI Demand Forecasting
+   - XGBoost or Random Forest models
+   - Per-product demand prediction
+   - Weekly forecast breakdown
+   - Confidence scores
+   - Fallback predictions when ML service is offline
+
+5. Smart Reorder Plans
+   - AI-generated reorder quantities
+   - Based on: predicted demand + safety stock - current stock
+   - Risk-level classification (Critical/High/Medium/Low/Overstock)
+   - Cost estimation per product and total
+   - CSV export functionality
+
+6. AI Insights & Alerts
+   - Inventory risk analysis for all products
+   - Natural-language alert messages
+   - Actionable recommendations
+   - Model performance tracking (R2, RMSE)
+
+7. Admin Panel
+   - User management (create, delete)
+   - System settings (lead time, safety stock, holidays)
+   - ML model training controls
+   - CSV data import
+   - Stock adjustment tools
+
+8. Dashboard
+   - Overview statistics
+   - Monthly sales chart
+   - Top selling products
+   - Low stock warnings
+   - ML service status indicator
+
+================================================================================
+                     11. API ENDPOINTS SUMMARY
+================================================================================
+
+AUTHENTICATION:
+  POST /api/auth/login          - Login
+  POST /api/auth/register       - Register (admin)
+  GET  /api/auth/me             - Current user
+  POST /api/auth/logout         - Logout
+
+PRODUCTS:
+  GET    /api/products          - List products
+  GET    /api/products/categories - Get categories
+  GET    /api/products/low-stock  - Low stock products
+  GET    /api/products/:id      - Get product
+  GET    /api/products/sku/:sku - Get by SKU
+  POST   /api/products          - Create product
+  PUT    /api/products/:id      - Update product
+  DELETE /api/products/:id      - Delete product
+
+SALES:
+  GET  /api/sales               - List sales
+  GET  /api/sales/summary       - Sales summary
+  POST /api/sales               - Record sale/return
+  GET  /api/sales/:id           - Get sale
+  GET  /api/sales/stats/monthly - Monthly stats
+
+FORECAST (ML):
+  POST /api/forecast/predict    - Predict demand
+  POST /api/forecast/batch      - Batch predictions
+  GET  /api/forecast/ml-status  - ML service status
+  GET  /api/forecast/health     - ML health check
+
+REORDER:
+  GET    /api/reorder           - List plans
+  POST   /api/reorder/generate  - Generate plan (AI)
+  GET    /api/reorder/:id       - Get plan
+  GET    /api/reorder/:id/export - Export CSV
+  PATCH  /api/reorder/:id/status - Update status
+  DELETE /api/reorder/:id       - Delete plan
+
+AI:
+  POST /api/ai/train-model         - Train model
+  POST /api/ai/predict-demand      - Predict with explanation
+  GET  /api/ai/inventory-insights  - Risk analysis
+  GET  /api/ai/reorder-plan        - Smart reorder plan
+  GET  /api/ai/alerts              - AI alerts
+  GET  /api/ai/model-metrics       - Model performance
+
+SETTINGS:
+  GET  /api/settings             - Get settings
+  PUT  /api/settings             - Update settings
+  POST /api/settings/holidays    - Add holiday
+  DELETE /api/settings/holidays/:d - Remove holiday
+
+ADMIN:
+  GET    /api/admin/users        - List users
+  POST   /api/admin/users        - Create user
+  DELETE /api/admin/users/:id    - Delete user
+  GET    /api/admin/stats        - System stats
+
+HEALTH:
+  GET /api/health                - Backend health check
+
+ML SERVICE (Python - port 8000):
+  GET  /health                   - Health check
+  POST /train                    - Train model
+  POST /predict                  - Single prediction
+  POST /batch-predict            - Batch predictions
+  POST /inventory-insights       - Risk analysis
+  POST /reorder-plan             - Smart reorder plan
+  POST /alerts                   - Generate alerts
+  GET  /model-info               - Model information
+
+================================================================================
+                     12. TECHNOLOGY DETAILS
+================================================================================
+
+Frontend:
+  - React 18.2.0          : UI library
+  - React Router DOM 6.x  : Client-side routing
+  - Axios 1.6.5           : HTTP client
+  - Recharts 2.10.4       : Chart/graph library
+  - React Scripts 5.0.1   : Build tooling (Webpack, Babel)
+
+Backend:
+  - Express 4.18.2        : Web framework
+  - Mongoose 8.23.0       : MongoDB ODM
+  - bcryptjs 2.4.3        : Password hashing
+  - jsonwebtoken 9.0.2    : JWT authentication
+  - cors 2.8.5            : Cross-Origin Resource Sharing
+  - express-validator 7.0  : Request validation
+  - json2csv              : CSV generation
+  - axios 1.6.5           : HTTP client (for ML service)
+  - dotenv 16.3.1         : Environment variables
+  - nodemon 3.0.3         : Development auto-restart
+
+ML Service:
+  - FastAPI 0.109+        : Python web framework
+  - Uvicorn 0.27+         : ASGI server
+  - scikit-learn 1.4+     : Machine learning library
+  - XGBoost 2.0+          : Gradient boosting algorithm
+  - pandas 2.0+           : Data manipulation
+  - numpy 1.26+           : Numerical computing
+  - joblib 1.3+           : Model serialization
+  - pymongo 4.6+          : MongoDB driver
+  - pydantic 2.5+         : Data validation
+
+Database:
+  - MongoDB Atlas          : Cloud-hosted MongoDB
+  - Database: StockDB
+  - 6 collections (users, products, sales, reorderplans, reorderplanitems, settings)
+
+================================================================================
+                     13. CURRENT STATUS
+================================================================================
+
+All three services are running and healthy:
+
+  Backend (Node.js):  http://localhost:5000  -> RUNNING (StockAI API is running)
+  ML Service (Python): http://localhost:8000 -> RUNNING (healthy, model loaded)
+  Frontend (React):    http://localhost:3000  -> RUNNING
+
+ML Model Status: Loaded (version 2.0.0)
+
+================================================================================
+                         END OF DOCUMENTATION
+================================================================================
